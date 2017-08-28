@@ -28,6 +28,7 @@ public class Main {
 
     public static void main(String[] args) throws Exception {
 
+        logger.info("Starting the service");
         MetricRegistry metrics = new MetricRegistry();
         final Counter jobs = metrics.counter(name(Main.class, "job-runs"));
 
@@ -37,11 +38,13 @@ public class Main {
         connectionFactory.setUri(rabbitUri);
         connectionFactory.setMetricsCollector(new StandardMetricsCollector(metrics));
 
+        logger.info("Connection to RabbitMQ");
         final Connection connection = connectionFactory.newConnection();
         final Channel channel = connection.createChannel();
 
         boolean statsd = Boolean.parseBoolean(System.getenv().getOrDefault("PROD", "false"));
         if (statsd) {
+            logger.info("Connection to statsd");
             StatsDReporter.forRegistry(metrics)
                     .build("statsd.example.com", 8125) // configuration -> STATSD_HOST, STATSD_PORT
                     .start(10, TimeUnit.SECONDS);
@@ -70,6 +73,6 @@ public class Main {
                 });
             }
         });
-
+        logger.info("Server initialized");
     }
 }
