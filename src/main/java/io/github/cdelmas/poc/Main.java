@@ -5,6 +5,7 @@ import java.io.IOException;
 import java.util.HashMap;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static com.codahale.metrics.MetricRegistry.name;
 import static spark.Spark.get;
@@ -59,27 +60,37 @@ public class Main {
         channel.queueDeclare("in-queue", true, false, false, new HashMap<>());
         channel.queueBind("in-queue", "in-ex", "job.to.do");
 
+        AtomicBoolean working = new AtomicBoolean(false);
+
+        channel.basicQos(1);
+
         logger.info("Creating the job handler");
         channel.basicConsume("in-queue", false, new DefaultConsumer(channel) {
             @Override
             public void handleDelivery(String consumerTag, Envelope envelope, AMQP.BasicProperties properties, byte[] body) throws IOException {
-                CompletableFuture.supplyAsync(() -> {
-                    final Timer.Context timerContext = timer.time();
-                    try {
-                        logger.info("Starting a new job");
-                        channel.basicAck(envelope.getDeliveryTag(), false);
-                        TimeUnit.SECONDS.sleep(15);
-                        return 42;
-                    } catch (Exception e) {
-                        logger.error("Oops", e);
-                        return 0;
-                    } finally {
-                        timerContext.stop();
-                    }
-                }).thenAccept(result -> {
-                    jobs.inc();
-                    logger.info("Job done: {}", result);
-                });
+                if (!working.getAndSet(true)) {
+                    logger.info("Starting a new job");
+                    CompletableFuture.supplyAsync(() -> {
+                        final Timer.Context timerContext = timer.time();
+                        try {
+                            channel.basicAck(envelope.getDeliveryTag(), false);
+                            TimeUnit.SECONDS.sleep(15);
+                            return 42;
+                        } catch (Exception e) {
+                            logger.error("Oops", e);
+                            return 0;
+                        } finally {
+                            timerContext.stop();
+                        }
+                    }).thenAccept(result -> {
+                        jobs.inc();
+                        logger.info("Job done: {}", result);
+                        working.set(false);
+                    });
+                } else {
+                    logger.info("Rejecting the message, as already working");
+                    channel.basicReject(envelope.getDeliveryTag(), true); // back pressure :)
+                }
             }
         });
         final int port = Integer.parseInt(System.getenv().getOrDefault("PORT", "8080"));
