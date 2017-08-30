@@ -7,9 +7,12 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
 import static com.codahale.metrics.MetricRegistry.name;
+import static spark.Spark.get;
+import static spark.Spark.port;
 
 import com.codahale.metrics.Counter;
 import com.codahale.metrics.MetricRegistry;
+import com.codahale.metrics.Timer;
 import com.rabbitmq.client.AMQP;
 import com.rabbitmq.client.BuiltinExchangeType;
 import com.rabbitmq.client.Channel;
@@ -31,6 +34,7 @@ public class Main {
         logger.info("Starting the service");
         MetricRegistry metrics = new MetricRegistry();
         final Counter jobs = metrics.counter(name(Main.class, "job-runs"));
+        final Timer timer = metrics.timer(name(Main.class, "job-exec-time"));
 
         ConnectionFactory connectionFactory = new ConnectionFactory();
 
@@ -42,22 +46,25 @@ public class Main {
         final Connection connection = connectionFactory.newConnection();
         final Channel channel = connection.createChannel();
 
-        boolean statsd = Boolean.parseBoolean(System.getenv().getOrDefault("PROD", "false"));
-        if (statsd) {
+        boolean isProd = Boolean.parseBoolean(System.getenv().getOrDefault("PROD", "false"));
+        if (isProd) {
             logger.info("Connection to statsd");
             StatsDReporter.forRegistry(metrics)
-                    .build("statsd.example.com", 8125) // configuration -> STATSD_HOST, STATSD_PORT
+                    .build("localhost", 8125) // configuration -> STATSD_HOST, STATSD_PORT
                     .start(10, TimeUnit.SECONDS);
         }
 
+        logger.info("Declaring RabbitMQ topology");
         channel.exchangeDeclare("in-ex", BuiltinExchangeType.DIRECT);
         channel.queueDeclare("in-queue", true, false, false, new HashMap<>());
         channel.queueBind("in-queue", "in-ex", "job.to.do");
 
+        logger.info("Creating the job handler");
         channel.basicConsume("in-queue", false, new DefaultConsumer(channel) {
             @Override
             public void handleDelivery(String consumerTag, Envelope envelope, AMQP.BasicProperties properties, byte[] body) throws IOException {
                 CompletableFuture.supplyAsync(() -> {
+                    final Timer.Context timerContext = timer.time();
                     try {
                         logger.info("Starting a new job");
                         channel.basicAck(envelope.getDeliveryTag(), false);
@@ -66,6 +73,8 @@ public class Main {
                     } catch (Exception e) {
                         logger.error("Oops", e);
                         return 0;
+                    } finally {
+                        timerContext.stop();
                     }
                 }).thenAccept(result -> {
                     jobs.inc();
@@ -73,6 +82,12 @@ public class Main {
                 });
             }
         });
+        final int port = Integer.parseInt(System.getenv().getOrDefault("PORT", "8080"));
+        logger.info("Starting the HTTP server on {}", port);
+        port(port);
+        get("/", (req, res) -> "UP");
+
         logger.info("Server initialized");
     }
+
 }
