@@ -63,13 +63,16 @@ public class Main {
         AtomicBoolean working = new AtomicBoolean(false);
 
         channel.basicQos(1);
+                            final String queue = "in-queue";
 
         logger.info("Creating the job handler");
-        channel.basicConsume("in-queue", false, new DefaultConsumer(channel) {
+        final DefaultConsumer consumer = new DefaultConsumer(channel) {
             @Override
             public void handleDelivery(String consumerTag, Envelope envelope, AMQP.BasicProperties properties, byte[] body) throws IOException {
                 if (!working.getAndSet(true)) {
                     logger.info("Starting a new job");
+                    logger.info("Stop fetching new messages");
+                    channel.basicCancel(getConsumerTag()); // stop fetching messages
                     CompletableFuture.supplyAsync(() -> {
                         final Timer.Context timerContext = timer.time();
                         try {
@@ -86,13 +89,21 @@ public class Main {
                         jobs.inc();
                         logger.info("Job done: {}", result);
                         working.set(false);
+                        try {
+                            logger.info("Refetch messages");
+                            channel.basicConsume(queue, false, this);
+                        } catch (IOException e) {
+                            logger.error("Could not consume again");
+                        }
                     });
                 } else {
                     logger.info("Rejecting the message, as already working");
                     channel.basicReject(envelope.getDeliveryTag(), true); // back pressure :)
                 }
             }
-        });
+        };
+        logger.info("Consumer tag: {}", consumer.getConsumerTag());
+        channel.basicConsume(queue, false, consumer); // bootstrap
         final int port = Integer.parseInt(System.getenv().getOrDefault("PORT", "8080"));
         logger.info("Starting the HTTP server on {}", port);
         port(port);
