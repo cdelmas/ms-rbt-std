@@ -2,12 +2,19 @@ package io.github.cdelmas.poc;
 
 
 import java.io.IOException;
+import java.security.SecureRandom;
+import java.time.Instant;
 import java.util.HashMap;
+import java.util.Random;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static com.codahale.metrics.MetricRegistry.name;
+import static java.lang.Math.abs;
+import static java.lang.Math.sqrt;
+import static java.time.Instant.now;
+import static java.time.temporal.ChronoUnit.MINUTES;
 import static spark.Spark.get;
 import static spark.Spark.port;
 
@@ -63,7 +70,7 @@ public class Main {
         AtomicBoolean working = new AtomicBoolean(false);
 
         channel.basicQos(1);
-                            final String queue = "in-queue";
+        final String queue = "in-queue";
 
         logger.info("Creating the job handler");
         final DefaultConsumer consumer = new DefaultConsumer(channel) {
@@ -77,6 +84,17 @@ public class Main {
                         final Timer.Context timerContext = timer.time();
                         try {
                             channel.basicAck(envelope.getDeliveryTag(), false);
+                            Instant end = now().plus(2, MINUTES);
+                            Random random = new SecureRandom();
+                            do { // 100% cpu task for 2 minutes
+                                final double v1 = sqrt(abs(random.nextLong()));
+                                final double v2 = sqrt(abs(random.nextLong()));
+                                final double v3 = sqrt(abs(random.nextLong()));
+                                final double total = v1 + v2 + v3;
+                                if (36 < total && total < 10000) {
+                                    logger.info("So nice, we had some chance: {}", total);
+                                }
+                            } while (end.isAfter(Instant.now()));
                             TimeUnit.SECONDS.sleep(15);
                             return 42;
                         } catch (Exception e) {
